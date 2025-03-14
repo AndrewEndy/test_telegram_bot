@@ -188,12 +188,3 @@ async def checkout(callback: types.CallbackQuery):
         # Зберігаємо message_id у базі даних
         order.message_id = sent_message.message_id
         await session.commit()
-
-
-async def notify_user(order_id: int):
-    async with AsyncSessionLocal() as session:
-        order = await session.get(Order, order_id)
-        if order.status == "paid":
-            await bot.send_message(order.user_id, "✅ Оплата успішна! Ваше замовлення обробляється.")
-        elif order.status == "failed":
-            await bot.send_message(order.user_id, "❌ Помилка оплати. Спробуйте ще раз.")

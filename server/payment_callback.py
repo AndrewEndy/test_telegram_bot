@@ -69,6 +69,12 @@ async def payment_callback(request: Request):
                     await bot.delete_message(chat_id=order.user_id, message_id=order.message_id)
                 # Надсилаємо користувачу сповіщення
                 await bot.send_message(order.user_id, message_text)
+            elif order.status == "failed":
+                # Видаляємо повідомлення з кнопкою оплати, якщо є message_id
+                if order.message_id:
+                    await bot.delete_message(chat_id=order.user_id, message_id=order.message_id)
+                # Надсилаємо користувачу сповіщення
+                await bot.send_message(order.user_id, "❌ Помилка оплати. Спробуйте ще раз.")
 
         return {"status": "ok"}
 
