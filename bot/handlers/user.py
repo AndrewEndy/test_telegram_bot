@@ -1,5 +1,6 @@
 from aiogram import Router, types, F
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from sqlalchemy import delete
 from sqlalchemy.future import select
@@ -21,10 +22,12 @@ async def get_all_products(message: types.Message, session: AsyncSessionLocal):
         await message.answer("Наразі товарів немає в наявності.")
         return
 
-    # Відправляємо кожен товар окремим повідомленням з кнопками
     for product in products:
         text = f"🛒 <b>{product.name}</b>\n\nОпис: {product.description}\n💰 Ціна: {product.price} грн"
-        await message.answer(text, reply_markup=get_product_variants_keyboard(product))
+        if product.photo_url:
+            await message.answer_photo(photo=product.photo_url, caption=text, reply_markup=get_product_variants_keyboard(product))
+        else:
+            await message.answer(text, reply_markup=get_product_variants_keyboard(product))
 
 
 # Обробка команди /start
@@ -143,16 +146,28 @@ async def checkout(callback: types.CallbackQuery):
 
         total_price = float(sum(item.product.price * item.quantity for item in cart_items))
 
-        # Створюємо одне замовлення для всіх товарів
-        order = Order(user_id=callback.from_user.id, status="pending")
+        # Формуємо список товарів для JSON
+        items = [
+            {
+                "name": item.product.name,
+                "variant": item.variant,
+                "quantity": item.quantity,
+                "price_per_unit": float(item.product.price),
+                "total": float(item.product.price * item.quantity)
+            }
+            for item in cart_items
+        ]
+
+        # Створюємо замовлення з деталями
+        order = Order(
+            user_id=callback.from_user.id,
+            total_price=total_price,
+            items=items,
+            status="pending"
+        )
         session.add(order)
         await session.commit()
         await session.refresh(order)  # Оновлюємо об'єкт, щоб отримати ID
-
-        # Додаємо товари до замовлення (тимчасово один товар)
-        for item in cart_items:
-            order.product_id = item.product_id
-            await session.commit()
 
         payment_url = generate_payment_link(total_price, f"order_{order.id}", "Оплата кошика")
 

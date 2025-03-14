@@ -22,8 +22,8 @@ class Product(Base):
     description = Column(String, nullable=False)
     price = Column(Float, nullable=False)
     types = Column(JSON, nullable=False, default=[])
+    photo_url = Column(String, nullable=True)
 
-    orders = relationship("Order", back_populates="product")
 
 
 
@@ -32,13 +32,13 @@ class Order(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.tg_id"))
-    product_id = Column(Integer, ForeignKey("products.id"))
+    total_price = Column(Float, nullable=False)  # Загальна ціна
+    items = Column(JSON, nullable=False)  # JSON зі списком товарів
     status = Column(String, default="pending")
     created_at = Column(DateTime, default=func.now())
     message_id = Column(Integer, nullable=True)
 
     user = relationship("User", back_populates="orders")
-    product = relationship("Product", back_populates="orders")
 
 
 class Cart(Base):
