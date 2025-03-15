@@ -112,79 +112,29 @@ async def show_cart(message: types.Message):
         )
         cart_items = cart_items.scalars().all()
 
-    if not cart_items:
-        await message.answer("🛒 Ваш кошик порожній")
-        return
-
-    total_price = 0
-    cart_text = "🛒 <b>Ваш кошик:</b>\n\n"
-    for item in cart_items:
-        total_price += item.product.price * item.quantity
-        cart_text += f"{item.product.name} ({item.variant}) - {item.quantity} шт.\n💰 {item.product.price * item.quantity} грн\n\n"
-
-    cart_text += f"<b>Загальна сума: {total_price} грн</b>"
-
-    # Додаємо кнопку "Оплатити"
-    buy_button = InlineKeyboardBuilder()
-    buy_button.button(text="💳 Оплатити", callback_data="checkout")
-
-    await message.answer(cart_text, reply_markup=buy_button.as_markup())
-
-
-# Формування оплати та зміни в бд
-@user_router.callback_query(F.data == "checkout")
-async def checkout(callback: types.CallbackQuery):
-    async with AsyncSessionLocal() as session:
-        cart_items = await session.execute(
-            select(Cart).options(joinedload(Cart.product)).where(Cart.user_id == callback.from_user.id)
-        )
-        cart_items = cart_items.scalars().all()
-
         if not cart_items:
-            await callback.answer("❌ Ваш кошик порожній", show_alert=True)
+            await message.answer("🛒 Ваш кошик порожній")
             return
 
-        total_price = float(sum(item.product.price * item.quantity for item in cart_items))
+        total_price = 0
+        cart_text = "🛒 <b>Ваш кошик:</b>\n\n"
+        for item in cart_items:
+            total_price += item.product.price * item.quantity
+            cart_text += f"{item.product.name} ({item.variant}) - {item.quantity} шт.\n💰 {item.product.price * item.quantity} грн\n\n"
 
-        # Формуємо список товарів для JSON
-        items = [
-            {
-                "name": item.product.name,
-                "variant": item.variant,
-                "quantity": item.quantity,
-                "price_per_unit": float(item.product.price),
-                "total": float(item.product.price * item.quantity)
-            }
-            for item in cart_items
-        ]
+        cart_text += f"<b>Загальна сума:</b> {total_price} грн"
 
-        # Створюємо замовлення з деталями
-        order = Order(
-            user_id=callback.from_user.id,
-            total_price=total_price,
-            items=items,
-            status="pending"
-        )
-        session.add(order)
-        await session.commit()
-        await session.refresh(order)  # Оновлюємо об'єкт, щоб отримати ID
+        # Генеруємо унікальний order_id на основі user_id і часу
+        order_id = f"cart_{message.from_user.id}_{int(message.date.timestamp())}"
+        payment_url = generate_payment_link(total_price, order_id, "Оплата кошика")
 
-        payment_url = generate_payment_link(total_price, f"order_{order.id}", "Оплата кошика")
+        # Додаємо кнопку "Оплатити" з посиланням
+        buy_button = InlineKeyboardBuilder()
+        buy_button.button(text="💳 Оплатити", url=payment_url)
 
-        # Очищаємо кошик
-        await session.execute(delete(Cart).where(Cart.user_id == callback.from_user.id))
-        await session.commit()
+        sent_message = await message.answer(cart_text, reply_markup=buy_button.as_markup())
 
-        # Створюємо inline-кнопку з посиланням
-        builder = InlineKeyboardBuilder()
-        builder.button(text="💳 Оплатити", url=payment_url)
-
-        # Редагуємо повідомлення з кнопкою і зберігаємо message_id
-        sent_message = await callback.message.edit_text(
-            "💳 Натисніть кнопку нижче, щоб оплатити ваше замовлення:",
-            reply_markup=builder.as_markup()
-        )
-
-        # Зберігаємо message_id у базі даних
-        order.message_id = sent_message.message_id
+        # Оновлюємо message_id для всіх записів у кошику користувача
+        for item in cart_items:
+            item.message_id = sent_message.message_id
         await session.commit()

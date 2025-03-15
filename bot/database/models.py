@@ -36,7 +36,7 @@ class Order(Base):
     items = Column(JSON, nullable=False)  # JSON зі списком товарів
     status = Column(String, default="pending")
     created_at = Column(DateTime, default=func.now())
-    message_id = Column(Integer, nullable=True)
+
 
     user = relationship("User", back_populates="orders")
 
@@ -49,6 +49,7 @@ class Cart(Base):
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     variant = Column(String, nullable=False)
     quantity = Column(Integer, default=1)
+    message_id = Column(Integer, nullable=True)
 
     user = relationship("User", back_populates="cart")
     product = relationship("Product")

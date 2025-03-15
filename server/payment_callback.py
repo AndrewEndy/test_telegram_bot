@@ -1,11 +1,13 @@
-# payment_callback.py
+# server/payment_callback.py
 import base64
 import hashlib
 import json
 from fastapi import FastAPI, Request, HTTPException
+from sqlalchemy import delete, select
+from sqlalchemy.orm import joinedload
 from bot.config import LIQPAY_PRIVATE_KEY
 from bot.database.db import AsyncSessionLocal
-from bot.database.models import Order
+from bot.database.models import Order, Cart
 from bot.create_bot import bot
 
 app = FastAPI()
@@ -14,7 +16,7 @@ app = FastAPI()
 async def payment_callback(request: Request):
     """Обробляє callback від LiqPay після оплати."""
     try:
-        # Отримуємо дані форми від LiqPay
+        # Отримуємо дані від LiqPay
         form_data = await request.form()
         data = form_data.get("data")
         signature = form_data.get("signature")
@@ -31,27 +33,55 @@ async def payment_callback(request: Request):
 
         # Декодуємо дані від LiqPay
         decoded_data = json.loads(base64.b64decode(data).decode())
-        order_id = int(decoded_data["order_id"].split("_")[1])  # Витягуємо ID замовлення
+        order_id = decoded_data["order_id"]  # Формат: "cart_userid_timestamp"
         status = decoded_data["status"]
+        print(f"Full LiqPay response: {decoded_data}")
 
-        # Оновлюємо статус замовлення в базі даних
         async with AsyncSessionLocal() as session:
-            order = await session.get(Order, order_id)
-            if not order:
-                raise HTTPException(status_code=404, detail="Order not found")
+            # Витягуємо user_id із order_id
+            user_id = int(order_id.split("_")[1])
 
-            # Встановлюємо статус залежно від відповіді LiqPay
+            # Отримуємо кошик із пов’язаними продуктами
+            cart_items = (await session.execute(
+                select(Cart).options(joinedload(Cart.product)).where(Cart.user_id == user_id)
+            )).scalars().all()
+
+            if not cart_items:
+                raise HTTPException(status_code=404, detail="Cart is empty")
+
+            # Обчислюємо загальну суму і формуємо список товарів
+            total_price = float(sum(item.product.price * item.quantity for item in cart_items))
+            items = [
+                {
+                    "name": item.product.name,
+                    "variant": item.variant,
+                    "quantity": item.quantity,
+                    "price_per_unit": float(item.product.price),
+                    "total": float(item.product.price * item.quantity)
+                }
+                for item in cart_items
+            ]
+
+            # Отримуємо message_id із першого елемента кошика (він однаковий для всіх)
+            message_id = cart_items[0].message_id if cart_items else None
+
+            # Обробляємо успішну оплату
             if status in ("success", "sandbox"):
-                order.status = "paid"
-            elif status in ("failure", "error", "limit", "9859"):
-                order.status = "failed"
-            else:
-                order.status = status
-            await session.commit()
+                # Створюємо замовлення
+                order = Order(
+                    user_id=user_id,
+                    total_price=total_price,
+                    items=items,
+                    status="paid"
+                )
+                session.add(order)
+                await session.commit()
 
-            # Якщо оплата успішна, надсилаємо деталі користувачу
-            if order.status == "paid":
-                # Формуємо текст із деталями замовлення
+                # Очищаємо кошик
+                await session.execute(delete(Cart).where(Cart.user_id == user_id))
+                await session.commit()
+
+                # Формуємо текст сповіщення
                 items_text = "\n".join(
                     f"- {item['name']} ({item['variant']}) - {item['quantity']} шт. за {item['total']} грн"
                     for item in order.items
@@ -64,20 +94,22 @@ async def payment_callback(request: Request):
                     f"<b>Дата:</b> {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
                 )
 
-                # Видаляємо повідомлення з кнопкою оплати, якщо є message_id
-                if order.message_id:
-                    await bot.delete_message(chat_id=order.user_id, message_id=order.message_id)
-                # Надсилаємо користувачу сповіщення
-                await bot.send_message(order.user_id, message_text)
-            elif order.status == "failed":
-                # Видаляємо повідомлення з кнопкою оплати, якщо є message_id
-                if order.message_id:
-                    await bot.delete_message(chat_id=order.user_id, message_id=order.message_id)
-                # Надсилаємо користувачу сповіщення
-                await bot.send_message(order.user_id, "❌ Помилка оплати. Спробуйте ще раз.")
+                # Видаляємо повідомлення кошика, якщо є message_id
+                if message_id:
+                    await bot.delete_message(chat_id=user_id, message_id=message_id)
+                # Надсилаємо сповіщення про успіх
+                await bot.send_message(user_id, message_text)
+
+            # Обробляємо неуспішну оплату
+            elif status in ("failure", "error"):
+                # Видаляємо повідомлення кошика, якщо є message_id
+                if message_id:
+                    await bot.delete_message(chat_id=user_id, message_id=message_id)
+                # Надсилаємо сповіщення про помилку
+                await bot.send_message(user_id, "❌ Помилка оплати. Спробуйте ще раз.")
 
         return {"status": "ok"}
 
     except Exception as e:
         print(f"Error in payment_callback: {str(e)}")
-        raise  # Кидаємо виняток, щоб FastAPI повернув 500 і ми могли відстежити проблему
+        raise
